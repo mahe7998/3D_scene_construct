@@ -1,0 +1,219 @@
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # ASSET DOWNLOADER SERVICE
+  # ===========================================================================
+  asset_downloader:
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+    image: 3d-scene-construct/base:latest
+    container_name: asset_downloader
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      - ASSET_COUNT=${ASSET_COUNT:-1000}
+      - ASSET_BATCH_SIZE=${ASSET_BATCH_SIZE:-10}
+      - ASSET_DOWNLOAD_WORKERS=${ASSET_DOWNLOAD_WORKERS:-4}
+    command: python -m src.asset_management.downloader
+    restart: "no"
+
+  # ===========================================================================
+  # RENDERER SERVICE (Blender)
+  # ===========================================================================
+  renderer:
+    build:
+      context: .
+      dockerfile: docker/blender.Dockerfile
+    image: 3d-scene-construct/blender:latest
+    container_name: renderer
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      - RENDER_RESOLUTION=${RENDER_RESOLUTION:-512}
+      - RENDER_SAMPLES=${RENDER_SAMPLES:-128}
+      - RENDER_ENGINE=${RENDER_ENGINE:-CYCLES}
+      - RENDER_DEVICE=${RENDER_DEVICE:-GPU}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${DOCKER_GPU_COUNT:-1}
+              capabilities: [gpu]
+    shm_size: ${DOCKER_SHM_SIZE:-8g}
+    command: python -m src.rendering.renderer
+    restart: "no"
+
+  # ===========================================================================
+  # VISION LLM SERVICE
+  # ===========================================================================
+  vision_model:
+    build:
+      context: .
+      dockerfile: docker/vision.Dockerfile
+    image: 3d-scene-construct/vision:latest
+    container_name: vision_model
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      - VISION_MODEL=${VISION_MODEL:-llava-1.6-vicuna-7b}
+      - VISION_BATCH_SIZE=${VISION_BATCH_SIZE:-8}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${DOCKER_GPU_COUNT:-1}
+              capabilities: [gpu]
+    shm_size: ${DOCKER_SHM_SIZE:-8g}
+    ports:
+      - "8000:8000"
+    command: python -m src.vision.server
+    restart: unless-stopped
+
+  # ===========================================================================
+  # ANNOTATOR SERVICE
+  # ===========================================================================
+  annotator:
+    build:
+      context: .
+      dockerfile: docker/vision.Dockerfile
+    image: 3d-scene-construct/vision:latest
+    container_name: annotator
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      - VISION_MODEL=${VISION_MODEL:-llava-1.6-vicuna-7b}
+      - VISION_BATCH_SIZE=${VISION_BATCH_SIZE:-8}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    depends_on:
+      - vision_model
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${DOCKER_GPU_COUNT:-1}
+              capabilities: [gpu]
+    shm_size: ${DOCKER_SHM_SIZE:-8g}
+    command: python -m src.vision.annotator
+    restart: "no"
+
+  # ===========================================================================
+  # SCENE GENERATOR SERVICE
+  # ===========================================================================
+  scene_generator:
+    build:
+      context: .
+      dockerfile: docker/blender.Dockerfile
+    image: 3d-scene-construct/blender:latest
+    container_name: scene_generator
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      - RENDER_RESOLUTION=${RENDER_RESOLUTION:-512}
+      - RENDER_SAMPLES=${RENDER_SAMPLES:-128}
+      - RENDER_DEVICE=${RENDER_DEVICE:-GPU}
+      - SCENE_COMPLEXITY_START=${SCENE_COMPLEXITY_START:-1}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${DOCKER_GPU_COUNT:-1}
+              capabilities: [gpu]
+    shm_size: ${DOCKER_SHM_SIZE:-8g}
+    command: python -m src.scene.generator
+    restart: "no"
+
+  # ===========================================================================
+  # RL TRAINER SERVICE
+  # ===========================================================================
+  rl_trainer:
+    build:
+      context: .
+      dockerfile: docker/rl.Dockerfile
+    image: 3d-scene-construct/rl:latest
+    container_name: rl_trainer
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      - RL_ALGORITHM=${RL_ALGORITHM:-PPO}
+      - RL_LEARNING_RATE=${RL_LEARNING_RATE:-0.0003}
+      - RL_TOTAL_TIMESTEPS=${RL_TOTAL_TIMESTEPS:-1000000}
+      - RL_N_ENVS=${RL_N_ENVS:-4}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    depends_on:
+      - vision_model
+      - scene_generator
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${DOCKER_GPU_COUNT:-1}
+              capabilities: [gpu]
+    shm_size: ${DOCKER_SHM_SIZE:-8g}
+    command: python -m src.rl.trainer
+    restart: "no"
+
+  # ===========================================================================
+  # MONITORING SERVICE (Tensorboard)
+  # ===========================================================================
+  monitor:
+    image: tensorflow/tensorflow:latest
+    container_name: monitor
+    volumes:
+      - ./data/logs:/logs
+    ports:
+      - "${TENSORBOARD_PORT:-6006}:6006"
+    command: tensorboard --logdir=/logs --host=0.0.0.0
+    restart: unless-stopped
+
+  # ===========================================================================
+  # TESTING SERVICE
+  # ===========================================================================
+  tests:
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+    image: 3d-scene-construct/base:latest
+    container_name: tests
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./tests:/app/tests
+    environment:
+      - PYTHONPATH=/app
+    command: pytest tests/ -v
+    restart: "no"
+
+volumes:
+  data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data
+
+networks:
+  default:
+    name: 3d-scene-network

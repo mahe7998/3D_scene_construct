@@ -1,0 +1,363 @@
+# Main Configuration File for 3D Scene Construction System
+
+# =============================================================================
+# RENDERING CONFIGURATION
+# =============================================================================
+rendering:
+  resolution: 512
+  samples: 128
+  engine: "CYCLES"  # CYCLES or EEVEE
+  device: "GPU"     # GPU or CPU
+  views_per_object: 12
+  format: "JPEG"
+  quality: 90
+
+  # Camera settings
+  camera:
+    focal_length: 50
+    sensor_width: 36
+    distances: [3, 4, 5]  # Multiple distances for variety
+    angles:
+      - [0, 0, 0]      # Front
+      - [0, 45, 0]     # Front-right
+      - [0, 90, 0]     # Right
+      - [0, 135, 0]    # Back-right
+      - [0, 180, 0]    # Back
+      - [0, 225, 0]    # Back-left
+      - [0, 270, 0]    # Left
+      - [0, 315, 0]    # Front-left
+      - [45, 45, 0]    # Top-front-right
+      - [45, 225, 0]   # Top-back-left
+      - [-30, 45, 0]   # Bottom-front-right
+      - [-30, 225, 0]  # Bottom-back-left
+
+  # Lighting presets
+  lighting:
+    presets:
+      - name: "default"
+        strength: 1.0
+        color: [1, 1, 1]
+      - name: "bright"
+        strength: 2.0
+        color: [1, 1, 1]
+      - name: "warm"
+        strength: 1.5
+        color: [1, 0.9, 0.7]
+      - name: "cool"
+        strength: 1.5
+        color: [0.8, 0.9, 1]
+      - name: "sunset"
+        strength: 1.2
+        color: [1, 0.6, 0.3]
+
+  # Background
+  background:
+    color: [0.5, 0.5, 0.5]  # Gray
+    use_hdri: false
+    hdri_path: null
+
+# =============================================================================
+# ASSET MANAGEMENT
+# =============================================================================
+assets:
+  count: 1000
+  batch_size: 10
+  download_workers: 4
+
+  # Data sources
+  sources:
+    - name: "objaverse"
+      enabled: true
+      priority: 1
+      categories:
+        - "furniture"
+        - "vehicle"
+        - "animal"
+        - "plant"
+        - "human"
+        - "building"
+        - "food"
+        - "tool"
+        - "electronics"
+        - "toy"
+
+    - name: "shapenet"
+      enabled: false
+      priority: 2
+      requires_registration: true
+
+  # File format preferences
+  formats:
+    preferred: ["glb", "gltf", "obj", "fbx"]
+    fallback: ["stl", "ply"]
+
+  # Quality filters
+  quality:
+    min_polygons: 100
+    max_polygons: 500000
+    require_textures: true
+    require_materials: true
+
+# =============================================================================
+# VISION LLM CONFIGURATION
+# =============================================================================
+vision:
+  model: "llava-1.6-vicuna-7b"
+  model_path: "/data/models/llava"
+  batch_size: 8
+  max_length: 512
+  temperature: 0.7
+
+  # Alternative models
+  alternatives:
+    - name: "llava-1.6-mistral-7b"
+      path: "/data/models/llava-mistral"
+    - name: "qwen-vl"
+      path: "/data/models/qwen-vl"
+
+  # Prompts for different tasks
+  prompts:
+    single_object: |
+      Describe this 3D rendered object in detail. Include:
+      1. Object category (e.g., vehicle, furniture, animal)
+      2. Specific type (e.g., sports car, office chair, dog)
+      3. Color and texture
+      4. Orientation and viewing angle
+      5. Notable features or attributes
+
+      Format your response as JSON:
+      {
+        "category": "...",
+        "type": "...",
+        "color": "...",
+        "orientation": "...",
+        "attributes": [...]
+      }
+
+    scene_description: |
+      Describe this 3D scene in detail. For each object visible:
+      1. Identify the object type
+      2. Describe its position (left/center/right, near/far)
+      3. Estimate its orientation
+      4. Note if it's partially occluded
+      5. Describe the ground/environment
+      6. Describe lighting conditions
+
+      Format your response as JSON with a list of objects.
+
+  # Fine-tuning settings
+  fine_tuning:
+    enabled: true
+    learning_rate: 0.0001
+    batch_size: 4
+    epochs: 3
+    lora_rank: 8
+    lora_alpha: 16
+
+# =============================================================================
+# SCENE GENERATION
+# =============================================================================
+scene:
+  # Complexity levels
+  complexity_levels:
+    1:
+      objects: [1, 3]
+      ground: "flat"
+      occlusion: 0.0
+      lighting: "simple"
+    2:
+      objects: [3, 5]
+      ground: "textured"
+      occlusion: 0.2
+      lighting: "varied"
+    3:
+      objects: [5, 8]
+      ground: "terrain"
+      occlusion: 0.4
+      lighting: "complex"
+    4:
+      objects: [8, 12]
+      ground: "urban"
+      occlusion: 0.6
+      lighting: "realistic"
+    5:
+      objects: [12, 20]
+      ground: "natural"
+      occlusion: 0.8
+      lighting: "cinematic"
+
+  # Ground types
+  ground:
+    types:
+      - name: "flat"
+        color: [0.5, 0.5, 0.5]
+        roughness: 0.8
+      - name: "grass"
+        texture: "grass"
+        roughness: 0.9
+      - name: "concrete"
+        texture: "concrete"
+        roughness: 0.7
+      - name: "wood"
+        texture: "wood"
+        roughness: 0.6
+
+  # Placement rules
+  placement:
+    min_distance_between_objects: 0.5
+    max_distance_from_center: 5.0
+    allow_overlap: false
+    physics_simulation: true
+    snap_to_ground: true
+
+# =============================================================================
+# REINFORCEMENT LEARNING
+# =============================================================================
+rl:
+  algorithm: "PPO"
+  learning_rate: 0.0003
+  total_timesteps: 1000000
+  n_envs: 4
+  n_steps: 2048
+  batch_size: 64
+
+  # PPO specific
+  ppo:
+    gamma: 0.99
+    gae_lambda: 0.95
+    clip_range: 0.2
+    ent_coef: 0.01
+    vf_coef: 0.5
+    max_grad_norm: 0.5
+
+  # Reward function weights
+  reward:
+    object_identification: 0.30
+    position_accuracy: 0.25
+    rotation_accuracy: 0.15
+    scale_accuracy: 0.10
+    scene_completeness: 0.15
+    false_positive_penalty: -0.05
+
+  # Curriculum learning
+  curriculum:
+    enabled: true
+    initial_complexity: 1
+    complexity_increase_threshold: 0.75  # When avg reward > this
+    complexity_increase_interval: 50000  # timesteps
+
+  # Network architecture
+  network:
+    policy: "MultiInputPolicy"
+    features_extractor:
+      type: "combined"
+      image_encoder: "resnet50"
+      text_encoder: "transformer"
+    hidden_layers: [256, 256]
+    activation: "relu"
+
+# =============================================================================
+# TRAINING
+# =============================================================================
+training:
+  # Checkpointing
+  checkpoint:
+    frequency: 10000
+    keep_last_n: 5
+    save_best: true
+    metric: "mean_reward"
+
+  # Evaluation
+  evaluation:
+    frequency: 5000
+    n_episodes: 10
+    deterministic: true
+
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 100000
+    min_improvement: 0.01
+
+  # Logging
+  logging:
+    level: "INFO"
+    tensorboard: true
+    mlflow: false
+    wandb: false
+
+# =============================================================================
+# DATABASE
+# =============================================================================
+database:
+  type: "sqlite"
+  path: "/data/database/assets.db"
+
+  # Schema
+  tables:
+    - name: "objects"
+      columns:
+        - "id TEXT PRIMARY KEY"
+        - "name TEXT"
+        - "category TEXT"
+        - "source TEXT"
+        - "file_path TEXT"
+        - "metadata JSON"
+        - "created_at TIMESTAMP"
+
+    - name: "renders"
+      columns:
+        - "id TEXT PRIMARY KEY"
+        - "object_id TEXT"
+        - "view_id TEXT"
+        - "image_path TEXT"
+        - "camera_params JSON"
+        - "lighting JSON"
+        - "created_at TIMESTAMP"
+
+    - name: "annotations"
+      columns:
+        - "id TEXT PRIMARY KEY"
+        - "render_id TEXT"
+        - "description TEXT"
+        - "category TEXT"
+        - "attributes JSON"
+        - "confidence REAL"
+        - "created_at TIMESTAMP"
+
+    - name: "scenes"
+      columns:
+        - "id TEXT PRIMARY KEY"
+        - "complexity_level INTEGER"
+        - "objects JSON"
+        - "environment JSON"
+        - "image_path TEXT"
+        - "ground_truth JSON"
+        - "created_at TIMESTAMP"
+
+# =============================================================================
+# PATHS
+# =============================================================================
+paths:
+  data: "/data"
+  assets_raw: "/data/assets/raw"
+  assets_rendered: "/data/assets/rendered"
+  scenes: "/data/scenes"
+  database: "/data/database"
+  models: "/data/models"
+  logs: "/data/logs"
+  checkpoints: "/data/checkpoints"
+
+# =============================================================================
+# HARDWARE
+# =============================================================================
+hardware:
+  gpu_device: 0
+  num_workers: 4
+  prefetch_factor: 2
+  pin_memory: true
+
+  # Memory limits
+  memory:
+    rendering_max_gb: 16
+    training_max_gb: 20

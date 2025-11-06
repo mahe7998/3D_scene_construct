@@ -1,0 +1,8 @@
+# Blender Python Dependencies
+# To be installed in Blender's Python environment
+
+# Basic packages
+numpy
+pillow
+pyyaml
+requests

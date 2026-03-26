@@ -1,2 +1,2 @@
 # 3D_scene_construct
-Use AI to recostruct 3D scene
+Use AI to reconstruct 3D scene

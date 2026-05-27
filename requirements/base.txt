@@ -23,6 +23,13 @@ trimesh==4.0.10
 pygltflib==1.16.1
 Pillow==10.2.0
 
+# Physics
+pybullet==3.2.5
+
+# Stereo vision
+opencv-contrib-python==4.9.0.80
+plyfile==0.8.1
+
 # Utilities
 click==8.1.7
 colorama==0.4.6

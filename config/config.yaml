@@ -211,6 +211,57 @@ scene:
     snap_to_ground: true
 
 # =============================================================================
+# PHYSICS SIMULATION
+# =============================================================================
+physics:
+  enabled: true
+  engine: "pybullet"
+
+  simulation:
+    gravity: -9.81
+    time_step: 0.004  # 250Hz
+    max_simulation_time: 10.0  # seconds
+    stability_threshold: 0.001  # m/s for velocity
+
+  ground:
+    type: "plane"
+    size: [10, 10]  # meters
+    position: [0, 0, 0]
+    friction: 0.5
+    restitution: 0.1  # Low bounce
+
+  object_placement:
+    upright_probability: 0.9  # 90% of objects start upright
+    drop_height: 0.5  # meters above object top
+    min_separation: 0.1  # meters between objects
+    max_placement_attempts: 10
+
+# =============================================================================
+# STEREOSCOPIC VISION
+# =============================================================================
+stereo:
+  enabled: true
+
+  camera:
+    baseline: 0.065  # meters (human IPD ~6.5cm)
+    convergence_distance: 5.0  # meters
+
+  disparity:
+    algorithm: "SGBM"  # SGBM or BM
+    min_disparity: 0
+    num_disparities: 160  # Must be divisible by 16
+    block_size: 5  # Odd number >= 1
+
+  output:
+    save_disparity: true
+    save_depth: true
+    save_point_cloud: false
+    format:
+      disparity: "PNG16"  # 16-bit PNG
+      depth: "NPY"  # NumPy array
+      point_cloud: "PLY"
+
+# =============================================================================
 # REINFORCEMENT LEARNING
 # =============================================================================
 rl:
@@ -232,10 +283,11 @@ rl:
 
   # Reward function weights
   reward:
-    object_identification: 0.30
-    position_accuracy: 0.25
+    object_identification: 0.25
+    position_accuracy: 0.20
     rotation_accuracy: 0.15
     scale_accuracy: 0.10
+    depth_accuracy: 0.15  # NEW: 3D depth from stereo
     scene_completeness: 0.15
     false_positive_penalty: -0.05
 

@@ -370,6 +370,153 @@ class BlenderRenderer:
 
         return rendered_paths
 
+    def render_stereo_pair(
+        self,
+        output_left: str,
+        output_right: str,
+        camera_config: 'StereoCamera' = None,
+        baseline: float = 0.065
+    ) -> Dict:
+        """
+        Render stereo pair (left and right views).
+
+        Args:
+            output_left: Output path for left image
+            output_right: Output path for right image
+            camera_config: StereoCamera configuration (optional)
+            baseline: Stereo baseline in meters (default: 0.065m = human IPD)
+
+        Returns:
+            Dictionary with camera parameters
+        """
+        from src.stereo.stereo_camera import StereoCamera
+        import mathutils
+
+        # Use provided camera or create default
+        if camera_config is None:
+            camera_config = StereoCamera(
+                baseline=baseline,
+                center_position=tuple(self.config.get("rendering.camera.position", (0, -5, 3))),
+                focal_length=self.config.get("rendering.camera.focal_length", 50.0)
+            )
+
+        # Get left and right camera configs
+        left_cam = camera_config.get_left_camera_config()
+        right_cam = camera_config.get_right_camera_config()
+
+        # Render left view
+        logger.debug("Rendering left eye view...")
+        cam_config = CameraConfig(
+            position=left_cam["position"],
+            rotation=left_cam["rotation"],
+            focal_length=left_cam["focal_length"],
+            sensor_width=left_cam["sensor_width"],
+            look_at=left_cam["look_at"]
+        )
+        self.setup_camera(cam_config)
+        self.render_to_file(output_left)
+
+        # Render right view
+        logger.debug("Rendering right eye view...")
+        cam_config = CameraConfig(
+            position=right_cam["position"],
+            rotation=right_cam["rotation"],
+            focal_length=right_cam["focal_length"],
+            sensor_width=right_cam["sensor_width"],
+            look_at=right_cam["look_at"]
+        )
+        self.setup_camera(cam_config)
+        self.render_to_file(output_right)
+
+        logger.info(f"Stereo pair rendered: {output_left}, {output_right}")
+
+        # Return camera parameters for stereo processing
+        return camera_config.to_dict(resolution=self.resolution)
+
+    def create_ground_plane(
+        self,
+        size: float = 10.0,
+        position: Tuple[float, float, float] = (0, 0, 0),
+        material_color: Tuple[float, float, float] = (0.8, 0.8, 0.8)
+    ):
+        """
+        Create a flat ground plane.
+
+        Args:
+            size: Size of the ground plane (meters)
+            position: Position of the ground (default at origin)
+            material_color: RGB color of the ground material
+        """
+        # Create plane mesh
+        bpy.ops.mesh.primitive_plane_add(
+            size=size,
+            location=position
+        )
+
+        ground = bpy.context.active_object
+        ground.name = "Ground"
+
+        # Create material
+        mat = bpy.data.materials.new(name="GroundMaterial")
+        mat.use_nodes = True
+
+        # Get material nodes
+        nodes = mat.node_tree.nodes
+        bsdf = nodes.get("Principled BSDF")
+
+        if bsdf:
+            bsdf.inputs["Base Color"].default_value = (*material_color, 1.0)
+            bsdf.inputs["Roughness"].default_value = 0.7
+            bsdf.inputs["Metallic"].default_value = 0.0
+
+        # Assign material
+        if ground.data.materials:
+            ground.data.materials[0] = mat
+        else:
+            ground.data.materials.append(mat)
+
+        logger.info(f"Ground plane created at {position} with size {size}m")
+
+        return ground
+
+    def place_object_at_position(
+        self,
+        mesh_path: str,
+        position: Tuple[float, float, float],
+        rotation_quat: Tuple[float, float, float, float] = (0, 0, 0, 1),
+        scale: Tuple[float, float, float] = (1, 1, 1)
+    ):
+        """
+        Load and place object at specific position with rotation (from physics).
+
+        Args:
+            mesh_path: Path to 3D mesh file
+            position: (x, y, z) position
+            rotation_quat: Quaternion rotation (x, y, z, w)
+            scale: Scale factors (sx, sy, sz)
+
+        Returns:
+            Blender object
+        """
+        # Load object
+        obj = self.load_object(mesh_path)
+        if not obj:
+            return None
+
+        # Set position
+        obj.location = position
+
+        # Set rotation (quaternion)
+        obj.rotation_mode = 'QUATERNION'
+        obj.rotation_quaternion = rotation_quat
+
+        # Set scale
+        obj.scale = scale
+
+        logger.debug(f"Placed object at {position} with rotation {rotation_quat}")
+
+        return obj
+
 
 def direction_to_rotation(direction):
     """Convert direction vector to rotation quaternion."""

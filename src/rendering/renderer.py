@@ -258,8 +258,12 @@ class BlenderRenderer:
             math.radians(r) for r in lighting_config.rotation
         )
 
-        # Set light properties
-        light_data.energy = lighting_config.strength * 1000  # Blender uses Watts
+        # Set light properties. Blender's energy units differ by light type:
+        # SUN is W/m^2 (daylight ~5), POINT/SPOT/AREA are Watts (typical 100-1000).
+        if lighting_config.type == 'SUN':
+            light_data.energy = lighting_config.strength * 5
+        else:
+            light_data.energy = lighting_config.strength * 1000
         light_data.color = lighting_config.color
 
     def render_to_file(self, output_path: str):
@@ -521,7 +525,8 @@ class BlenderRenderer:
 def direction_to_rotation(direction):
     """Convert direction vector to rotation quaternion."""
     import mathutils
-    return mathutils.Vector(direction).to_track_quat('Z', 'Y')
+    # Blender cameras look down -Z, so track -Z (not +Z) to the look-at direction.
+    return mathutils.Vector(direction).to_track_quat('-Z', 'Y')
 
 
 def main():
@@ -545,7 +550,14 @@ def main():
         help="Run test render",
     )
 
-    args = parser.parse_args()
+    # When launched via `blender --background --python script.py -- <args>`,
+    # sys.argv contains Blender's own arguments too. Strip everything up to
+    # and including the `--` separator so argparse only sees our flags.
+    if "--" in sys.argv:
+        argv = sys.argv[sys.argv.index("--") + 1:]
+    else:
+        argv = sys.argv[1:]
+    args = parser.parse_args(argv)
 
     if bpy is None:
         logger.error("Blender Python API not available")
@@ -559,8 +571,33 @@ def main():
 
     if args.test:
         logger.info("Test mode - creating simple scene")
-        # Create a test cube
+        # Create a test cube with a procedural checker material so the render
+        # shows both shape (shading) and texture.
         bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
+        cube = bpy.context.active_object
+
+        mat = bpy.data.materials.new(name="TestCheckerMaterial")
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        bsdf = nodes.get("Principled BSDF")
+        bsdf.inputs["Roughness"].default_value = 0.4
+        coord = nodes.new("ShaderNodeTexCoord")
+        checker = nodes.new("ShaderNodeTexChecker")
+        checker.inputs["Scale"].default_value = 5.0
+        checker.inputs["Color1"].default_value = (0.85, 0.15, 0.15, 1.0)
+        checker.inputs["Color2"].default_value = (0.95, 0.95, 0.95, 1.0)
+        links.new(coord.outputs["Generated"], checker.inputs["Vector"])
+        links.new(checker.outputs["Color"], bsdf.inputs["Base Color"])
+        cube.data.materials.append(mat)
+
+        # Solid grey ground; place it at z=-1 so the cube sits on top.
+        renderer.create_ground_plane(
+            size=20.0,
+            position=(0, 0, -1),
+            material_color=(0.5, 0.5, 0.5),
+        )
+
         camera_config = CameraConfig.from_spherical(5, 45, 30)
         renderer.setup_camera(camera_config)
         lighting_config = LightingConfig.get_preset("default")

@@ -48,7 +48,8 @@ services:
               count: ${DOCKER_GPU_COUNT:-1}
               capabilities: [gpu]
     shm_size: ${DOCKER_SHM_SIZE:-8g}
-    command: python -m src.rendering.renderer
+    entrypoint: ["blender", "--background", "--python-exit-code", "1", "--python", "/app/src/rendering/renderer.py", "--"]
+    command: []
     restart: "no"
 
   # ===========================================================================

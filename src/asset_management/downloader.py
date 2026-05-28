@@ -50,47 +50,60 @@ class AssetDownloader:
         self.download_workers = self.config.get("assets.download_workers", 4)
 
         logger.info(f"Asset downloader initialized")
-        logger.info(f"Target count: {self.asset_count}")
         logger.info(f"Output directory: {self.assets_raw_dir}")
 
-    def download_objaverse_assets(self, count: Optional[int] = None) -> List[str]:
+    def _load_all_uids(self) -> List[str]:
+        """
+        Return the full Objaverse UID list, caching it on disk after the first
+        call. Avoids re-parsing all 160 annotation chunks on every run (~1 min
+        even when fully cached) when we only need the list of keys.
+        """
+        cache_path = self.assets_raw_dir.parent / "cache" / "objaverse_uids.json"
+        if cache_path.exists():
+            logger.info(f"Loading cached UID list from {cache_path}")
+            with open(cache_path) as f:
+                return json.load(f)
+
+        logger.info(
+            "Fetching Objaverse annotations (first run; subsequent runs will "
+            "use the cached UID list)..."
+        )
+        annotations = objaverse.load_annotations()
+        uids = list(annotations.keys())
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(uids, f)
+        logger.info(f"Cached {len(uids)} UIDs to {cache_path}")
+        return uids
+
+    def download_objaverse_assets(
+        self, count: Optional[int] = None, offset: int = 0
+    ) -> List[str]:
         """
         Download assets from Objaverse.
 
         Args:
             count: Number of assets to download (uses config if not specified)
+            offset: Skip this many UIDs before selecting
 
         Returns:
             List of downloaded object IDs
         """
         count = count or self.asset_count
-        logger.info(f"Downloading {count} assets from Objaverse...")
+        logger.info(f"Downloading {count} assets from Objaverse (offset={offset})...")
 
         try:
-            # Get UIDs from Objaverse
-            logger.info("Fetching Objaverse annotations...")
-            annotations = objaverse.load_annotations()
+            all_uids = self._load_all_uids()
+            uids = all_uids[offset:offset + count]
 
-            # Filter by categories if specified
-            enabled_sources = [
-                s for s in self.config.get("assets.sources", [])
-                if s.get("enabled", True) and s.get("name") == "objaverse"
-            ]
+            # Only fetch metadata for the selected UIDs (much faster than full load).
+            logger.info(f"Fetching annotations for {len(uids)} selected UIDs...")
+            annotations = objaverse.load_annotations(uids=uids)
 
-            if enabled_sources and "categories" in enabled_sources[0]:
-                categories = enabled_sources[0]["categories"]
-                logger.info(f"Filtering by categories: {categories}")
-                # Note: Objaverse doesn't have built-in category filtering
-                # We'll download diverse objects and filter later
-                uids = list(annotations.keys())[:count * 2]  # Download more to filter
-            else:
-                uids = list(annotations.keys())[:count]
-
-            # Download objects
             logger.info(f"Downloading {len(uids)} objects...")
             objects = objaverse.load_objects(
-                uids=uids[:count],
-                download_processes=self.download_workers
+                uids=uids,
+                download_processes=self.download_workers,
             )
 
             # Organize downloaded files
@@ -114,13 +127,15 @@ class AssetDownloader:
                     with open(metadata_path, "w") as f:
                         json.dump(metadata, f, indent=2)
 
-                    # Add to database
+                    # Add to database; use the Objaverse UID as the row's id so
+                    # repeated downloads update in place rather than duplicate.
                     self.db.add_object(
                         name=metadata.get("name", uid),
                         category=category,
                         source="objaverse",
                         file_path=str(dest_path.relative_to(self.assets_raw_dir.parent)),
                         metadata=metadata,
+                        object_id=uid,
                     )
 
                     downloaded_ids.append(uid)
@@ -145,13 +160,28 @@ class AssetDownloader:
         Returns:
             Category string
         """
-        # Try to extract category from metadata
-        if "category" in metadata:
-            return metadata["category"].lower()
+        # Objaverse annotations store tags/categories as lists of
+        # {"name": ..., "slug": ...} dicts, not bare strings.
+        def _name_of(item):
+            if isinstance(item, dict):
+                return item.get("name") or item.get("slug")
+            if isinstance(item, str):
+                return item
+            return None
 
-        if "tags" in metadata and metadata["tags"]:
-            # Use first tag as category
-            return metadata["tags"][0].lower()
+        for key in ("category", "categories"):
+            val = metadata.get(key)
+            if isinstance(val, list) and val:
+                name = _name_of(val[0])
+            else:
+                name = _name_of(val)
+            if name:
+                return name.lower()
+
+        if metadata.get("tags"):
+            name = _name_of(metadata["tags"][0])
+            if name:
+                return name.lower()
 
         if "name" in metadata:
             name = metadata["name"].lower()
@@ -199,6 +229,12 @@ def main():
         help="Number of assets to download (default: from config)",
     )
     parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Skip this many UIDs before selecting (lets you pick different assets across runs)",
+    )
+    parser.add_argument(
         "--source",
         type=str,
         default="objaverse",
@@ -222,7 +258,9 @@ def main():
 
     # Download assets
     if args.source == "objaverse":
-        downloaded = downloader.download_objaverse_assets(count=args.count)
+        downloaded = downloader.download_objaverse_assets(
+            count=args.count, offset=args.offset
+        )
         logger.info(f"Downloaded {len(downloaded)} assets")
 
     # Print stats

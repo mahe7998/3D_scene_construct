@@ -119,15 +119,23 @@ class Database:
         source: str,
         file_path: str,
         metadata: Dict[str, Any] = None,
+        object_id: Optional[str] = None,
     ) -> str:
-        """Add a new object to the database."""
-        object_id = str(uuid.uuid4())
+        """Add (or replace) an object in the database.
+
+        If ``object_id`` is provided (e.g. the source-system UID like an
+        Objaverse UID), the row is upserted on that key so re-running a
+        download for the same asset updates the existing row rather than
+        accumulating duplicates. If omitted, a fresh UUID is generated.
+        """
+        if object_id is None:
+            object_id = str(uuid.uuid4())
         metadata_json = json.dumps(metadata) if metadata else None
 
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT INTO objects (id, name, category, source, file_path, metadata)
+            INSERT OR REPLACE INTO objects (id, name, category, source, file_path, metadata)
             VALUES (?, ?, ?, ?, ?, ?)
         """,
             (object_id, name, category, source, file_path, metadata_json),

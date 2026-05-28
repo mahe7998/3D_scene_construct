@@ -18,6 +18,9 @@ services:
       - ASSET_COUNT=${ASSET_COUNT:-1000}
       - ASSET_BATCH_SIZE=${ASSET_BATCH_SIZE:-10}
       - ASSET_DOWNLOAD_WORKERS=${ASSET_DOWNLOAD_WORKERS:-4}
+      # objaverse caches annotations under $HOME/.objaverse; point it at the
+      # persisted /data volume so re-runs skip the 10-minute metadata fetch.
+      - HOME=/data/cache
     entrypoint: ["python3", "-m", "src.asset_management.downloader"]
     command: []
     restart: "no"

@@ -208,14 +208,6 @@ services:
     command: pytest tests/ -v
     restart: "no"
 
-volumes:
-  data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ./data
-
 networks:
   default:
     name: 3d-scene-network

@@ -22,6 +22,7 @@ alembic==1.13.1
 trimesh==4.0.10
 pygltflib==1.16.1
 Pillow==10.2.0
+objaverse==0.1.7
 
 # Physics
 pybullet==3.2.5

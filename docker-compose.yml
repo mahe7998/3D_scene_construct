@@ -18,7 +18,8 @@ services:
       - ASSET_COUNT=${ASSET_COUNT:-1000}
       - ASSET_BATCH_SIZE=${ASSET_BATCH_SIZE:-10}
       - ASSET_DOWNLOAD_WORKERS=${ASSET_DOWNLOAD_WORKERS:-4}
-    command: python -m src.asset_management.downloader
+    entrypoint: ["python3", "-m", "src.asset_management.downloader"]
+    command: []
     restart: "no"
 
   # ===========================================================================

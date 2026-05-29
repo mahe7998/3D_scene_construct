@@ -182,6 +182,20 @@ class BlenderRenderer:
             else:
                 obj = mesh_objects[0]
 
+            logger.info(f"Loaded object: {obj.name}, type: {obj.type}, has data: {obj.data is not None}")
+
+            # Ensure object has at least one material
+            if not obj.data.materials:
+                logger.info("Object has no materials, adding default material")
+                mat = bpy.data.materials.new(name="DefaultMaterial")
+                mat.use_nodes = True
+                nodes = mat.node_tree.nodes
+                bsdf = nodes.get("Principled BSDF")
+                if bsdf:
+                    bsdf.inputs["Base Color"].default_value = (0.8, 0.8, 0.8, 1.0)
+                    bsdf.inputs["Roughness"].default_value = 0.5
+                obj.data.materials.append(mat)
+
             return obj
 
         except Exception as e:
@@ -221,6 +235,9 @@ class BlenderRenderer:
         if max_dim > 0:
             scale_factor = target_size / max_dim
             obj.scale = (scale_factor, scale_factor, scale_factor)
+            logger.info(f"Object dimensions: {dimensions}, max: {max_dim:.3f}, scale: {scale_factor:.3f}")
+        else:
+            logger.warning(f"Object has zero dimensions: {dimensions}")
 
     def setup_camera(self, camera_config: CameraConfig):
         """

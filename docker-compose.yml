@@ -55,6 +55,48 @@ services:
     restart: "no"
 
   # ===========================================================================
+  # vLLM INFERENCE SERVER (OpenAI-compatible)
+  # ===========================================================================
+  # Serves the vision-language model with paged attention + continuous batching
+  # for high RL-loop throughput. Uses the official upstream image (no custom
+  # build); weights are bind-mounted from the host ./data/models so nothing is
+  # baked in and the same files are reusable for fine-tuning.
+  # NOTE: requires a vLLM build with Qwen2.5-VL support (>= 0.7.2 / transformers
+  # >= 4.49). Pin a tag here if `latest` ever regresses.
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vllm
+    volumes:
+      - ./data/models:/models
+      - ./data/cache:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    command: >
+      --model /models/Qwen2.5-VL-7B-Instruct
+      --served-model-name qwen2.5-vl-7b
+      --dtype bfloat16
+      --max-model-len 8192
+      --gpu-memory-utilization 0.92
+      --trust-remote-code
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${DOCKER_GPU_COUNT:-1}
+              capabilities: [gpu]
+    shm_size: ${DOCKER_SHM_SIZE:-8g}
+    ports:
+      - "8001:8000"   # host 8001 -> vLLM 8000 (in-network: http://vllm:8000)
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
+    restart: unless-stopped
+
+  # ===========================================================================
   # VISION LLM SERVICE
   # ===========================================================================
   vision_model:
@@ -68,17 +110,12 @@ services:
       - ./src:/app/src
       - ./config:/app/config
     environment:
-      - VISION_MODEL=${VISION_MODEL:-llava-1.6-vicuna-7b}
       - VISION_BATCH_SIZE=${VISION_BATCH_SIZE:-8}
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${DOCKER_GPU_COUNT:-1}
-              capabilities: [gpu]
-    shm_size: ${DOCKER_SHM_SIZE:-8g}
+    # Thin proxy over vLLM (project-specific prompts + /describe API). No GPU of
+    # its own - vLLM owns the device.
+    depends_on:
+      vllm:
+        condition: service_healthy
     ports:
       - "8000:8000"
     command: python -m src.vision.server
@@ -98,19 +135,12 @@ services:
       - ./src:/app/src
       - ./config:/app/config
     environment:
-      - VISION_MODEL=${VISION_MODEL:-llava-1.6-vicuna-7b}
       - VISION_BATCH_SIZE=${VISION_BATCH_SIZE:-8}
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    # Calls the VisionModel vLLM client directly, so it depends on vLLM (not the
+    # vision_model proxy).
     depends_on:
-      - vision_model
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${DOCKER_GPU_COUNT:-1}
-              capabilities: [gpu]
-    shm_size: ${DOCKER_SHM_SIZE:-8g}
+      vllm:
+        condition: service_healthy
     command: python -m src.vision.annotator
     restart: "no"
 

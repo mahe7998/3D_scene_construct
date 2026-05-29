@@ -302,7 +302,8 @@ class BlenderRenderer:
             logger.error(f"Object {object_id} not found in database")
             return []
 
-        file_path = Path("/data") / obj_data["file_path"]
+        # File path is stored relative to assets_raw_dir.parent (/data/assets)
+        file_path = self.assets_raw_dir.parent / obj_data["file_path"]
 
         # Clear scene and load object
         self.clear_scene()
@@ -397,7 +398,8 @@ class BlenderRenderer:
             logger.error(f"Object {object_id} not found in database")
             return []
 
-        file_path = Path("/data") / obj_data["file_path"]
+        # File path is stored relative to assets_raw_dir.parent (/data/assets)
+        file_path = self.assets_raw_dir.parent / obj_data["file_path"]
 
         # Clear scene and load object
         self.clear_scene()

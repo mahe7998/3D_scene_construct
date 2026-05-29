@@ -218,7 +218,7 @@ class BlenderRenderer:
         # Apply all transformations
         bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-        # Get bounding box
+        # Get bounding box in local/world coords (matrix is identity after apply)
         bbox_corners = [obj.matrix_world @ vertex.co for vertex in obj.data.vertices]
         min_coords = [min([corner[i] for corner in bbox_corners]) for i in range(3)]
         max_coords = [max([corner[i] for corner in bbox_corners]) for i in range(3)]
@@ -227,17 +227,27 @@ class BlenderRenderer:
         dimensions = [max_coords[i] - min_coords[i] for i in range(3)]
         center = [(min_coords[i] + max_coords[i]) / 2 for i in range(3)]
 
-        # Move to origin
-        obj.location = tuple(-c for c in center)
-
-        # Scale to target size
         max_dim = max(dimensions)
-        if max_dim > 0:
-            scale_factor = target_size / max_dim
-            obj.scale = (scale_factor, scale_factor, scale_factor)
-            logger.info(f"Object dimensions: {dimensions}, max: {max_dim:.3f}, scale: {scale_factor:.3f}")
-        else:
+        if max_dim <= 0:
             logger.warning(f"Object has zero dimensions: {dimensions}")
+            return
+
+        scale_factor = target_size / max_dim
+
+        # Apply centering and scaling directly to vertices for predictable result
+        for vertex in obj.data.vertices:
+            vertex.co.x = (vertex.co.x - center[0]) * scale_factor
+            vertex.co.y = (vertex.co.y - center[1]) * scale_factor
+            vertex.co.z = (vertex.co.z - center[2]) * scale_factor
+
+        # Update mesh
+        obj.data.update()
+
+        # Reset transforms
+        obj.location = (0, 0, 0)
+        obj.scale = (1, 1, 1)
+
+        logger.info(f"Object dimensions: {dimensions}, max: {max_dim:.3f}, scale: {scale_factor:.3f}, center was at: {center}")
 
     def setup_camera(self, camera_config: CameraConfig):
         """

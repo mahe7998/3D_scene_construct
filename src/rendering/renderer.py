@@ -155,8 +155,33 @@ class BlenderRenderer:
                 logger.warning(f"Unsupported format: {extension}")
                 return None
 
-            # Get imported object (should be selected)
-            obj = bpy.context.selected_objects[0] if bpy.context.selected_objects else None
+            # Get imported objects (glTF often imports multiple: meshes, empties, cameras)
+            imported_objects = bpy.context.selected_objects
+
+            # Filter for mesh objects only
+            mesh_objects = [o for o in imported_objects if o.type == 'MESH' and o.data is not None]
+
+            if not mesh_objects:
+                logger.warning(f"No mesh objects found in {file_path}")
+                return None
+
+            # If multiple meshes, join them into one
+            if len(mesh_objects) > 1:
+                logger.info(f"Joining {len(mesh_objects)} mesh objects")
+                bpy.context.view_layer.objects.active = mesh_objects[0]
+                bpy.ops.object.select_all(action='DESELECT')
+                for obj in mesh_objects:
+                    obj.select_set(True)
+                bpy.ops.object.join()
+                obj = bpy.context.active_object
+            else:
+                obj = mesh_objects[0]
+
+            # Deselect non-mesh objects (cameras, lights, empties)
+            for o in imported_objects:
+                if o.type != 'MESH':
+                    bpy.data.objects.remove(o, do_unlink=True)
+
             return obj
 
         except Exception as e:

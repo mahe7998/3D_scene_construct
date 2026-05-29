@@ -66,11 +66,11 @@ def main():
     disp_vis = estimator.visualize_disparity(result["disparity"])
     Image.fromarray(disp_vis).save(output_dir / "disparity.png")
 
-    estimator.save_depth(result["depth"], str(output_dir / "depth.png"))
+    estimator.save_depth(result["depth"], str(output_dir / "depth.npy"))
 
     print(f"\nVisualization saved to: {output_dir}")
     print(f"  - disparity.png (colored disparity map)")
-    print(f"  - depth.png (depth map)")
+    print(f"  - depth.npy (raw depth map, meters)")
 
 
 if __name__ == "__main__":

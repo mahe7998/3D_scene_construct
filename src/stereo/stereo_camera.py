@@ -23,42 +23,89 @@ class StereoCamera:
     # Rotation (degrees)
     rotation: Tuple[float, float, float] = (60, 0, 0)
 
+    def _get_camera_axes(self):
+        """
+        Compute camera local axes (right, up, forward) from look direction.
+
+        Returns:
+            (right, up, forward) unit vectors in world coordinates
+        """
+        center = np.array(self.center_position, dtype=float)
+        target = np.array(self.look_at, dtype=float)
+
+        # Forward = direction from camera to look_at point
+        forward = target - center
+        forward = forward / np.linalg.norm(forward)
+
+        # World up
+        world_up = np.array([0.0, 0.0, 1.0])
+
+        # Right = forward × world_up (perpendicular to both)
+        right = np.cross(forward, world_up)
+        right_norm = np.linalg.norm(right)
+        if right_norm < 1e-6:
+            # Looking straight up/down, use world Y as fallback
+            right = np.array([1.0, 0.0, 0.0])
+        else:
+            right = right / right_norm
+
+        # Up = right × forward (orthogonal)
+        up = np.cross(right, forward)
+        up = up / np.linalg.norm(up)
+
+        return right, up, forward
+
     def get_left_camera_config(self):
         """
         Get left camera configuration.
 
+        Offsets along camera's local RIGHT axis (perpendicular to look direction)
+        so both cameras remain PARALLEL (not converging) - required for SGBM.
+
         Returns:
             Dictionary with camera parameters
         """
-        # Left camera is offset by -baseline/2 in X
-        offset = np.array([-self.baseline / 2, 0, 0])
-        left_position = tuple(np.array(self.center_position) + offset)
+        right, up, forward = self._get_camera_axes()
+
+        # Offset left along the camera's right axis
+        left_position = tuple(np.array(self.center_position) - right * (self.baseline / 2))
+
+        # Both cameras look in the SAME direction (parallel), not at same point
+        # Use a far look_at point along the forward direction for both cameras
+        far_target = tuple(np.array(left_position) + forward * 1000.0)
 
         return {
             "position": left_position,
             "rotation": self.rotation,
             "focal_length": self.focal_length,
             "sensor_width": self.sensor_width,
-            "look_at": self.look_at,
+            "look_at": far_target,
         }
 
     def get_right_camera_config(self):
         """
         Get right camera configuration.
 
+        Offsets along camera's local RIGHT axis (perpendicular to look direction)
+        so both cameras remain PARALLEL (not converging) - required for SGBM.
+
         Returns:
             Dictionary with camera parameters
         """
-        # Right camera is offset by +baseline/2 in X
-        offset = np.array([self.baseline / 2, 0, 0])
-        right_position = tuple(np.array(self.center_position) + offset)
+        right, up, forward = self._get_camera_axes()
+
+        # Offset right along the camera's right axis
+        right_position = tuple(np.array(self.center_position) + right * (self.baseline / 2))
+
+        # Both cameras look in the SAME direction (parallel), not at same point
+        far_target = tuple(np.array(right_position) + forward * 1000.0)
 
         return {
             "position": right_position,
             "rotation": self.rotation,
             "focal_length": self.focal_length,
             "sensor_width": self.sensor_width,
-            "look_at": self.look_at,
+            "look_at": far_target,
         }
 
     def get_camera_intrinsics(self, resolution: int = 512):

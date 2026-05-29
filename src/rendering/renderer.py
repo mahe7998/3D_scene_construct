@@ -374,6 +374,128 @@ class BlenderRenderer:
 
         return rendered_paths
 
+    def render_object_stereo_views(
+        self,
+        object_id: str,
+        num_views: Optional[int] = None,
+    ) -> List[Dict[str, str]]:
+        """
+        Render multiple stereo view pairs of an object.
+
+        Args:
+            object_id: Object ID from database
+            num_views: Number of stereo pairs to render (uses config if not specified)
+
+        Returns:
+            List of dicts with left/right image paths and camera params
+        """
+        from src.stereo.stereo_camera import StereoCamera
+
+        # Get object from database
+        obj_data = self.db.get_object(object_id)
+        if not obj_data:
+            logger.error(f"Object {object_id} not found in database")
+            return []
+
+        file_path = Path("/data") / obj_data["file_path"]
+
+        # Clear scene and load object
+        self.clear_scene()
+        obj = self.load_object(str(file_path))
+        if not obj:
+            return []
+
+        # Center and scale object
+        self.center_and_scale_object(obj)
+
+        # Get camera angles from config (simplified for stereo - use 6 key angles)
+        camera_angles = self.config.get("rendering.camera.angles", [])
+        if not camera_angles:
+            # Default 6 angles around the object
+            camera_angles = [
+                [0, 0, 0],      # Front
+                [0, 90, 0],     # Right
+                [0, 180, 0],    # Back
+                [0, 270, 0],    # Left
+                [30, 45, 0],    # Top-front-right
+                [-30, 225, 0],  # Bottom-back-left
+            ]
+
+        num_views = num_views or self.config.get("rendering.stereo_views_per_object", 6)
+        camera_angles = camera_angles[:num_views]
+
+        # Get lighting preset
+        lighting_config = LightingConfig.get_preset("default")
+        self.setup_lighting(lighting_config)
+
+        # Get stereo baseline
+        baseline = self.config.get("stereo.camera.baseline", 0.065)
+
+        # Create output directory
+        output_dir = self.assets_rendered_dir / obj_data["category"] / object_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        rendered_pairs = []
+
+        # Render stereo pairs from each angle
+        for i, angle in enumerate(camera_angles):
+            view_id = f"{i+1:03d}"
+
+            # Set up stereo camera
+            distance = self.config.get("rendering.camera.distances", [4])[0]
+            center_cam = CameraConfig.from_spherical(
+                distance=distance,
+                azimuth=angle[1],
+                elevation=angle[0],
+                look_at=(0, 0, 0),
+            )
+
+            stereo_camera = StereoCamera(
+                baseline=baseline,
+                center_position=center_cam.position,
+                look_at=(0, 0, 0),
+                focal_length=center_cam.focal_length
+            )
+
+            # Output paths
+            output_left = output_dir / f"view_{view_id}_L.jpg"
+            output_right = output_dir / f"view_{view_id}_R.jpg"
+
+            # Render stereo pair
+            camera_params = self.render_stereo_pair(
+                str(output_left),
+                str(output_right),
+                stereo_camera,
+                baseline
+            )
+
+            # Add both renders to database
+            self.db.add_render(
+                object_id=object_id,
+                view_id=f"{view_id}_L",
+                image_path=str(output_left.relative_to(self.assets_rendered_dir.parent)),
+                camera_params=camera_params['left_camera'],
+                lighting=lighting_config.to_dict(),
+            )
+
+            self.db.add_render(
+                object_id=object_id,
+                view_id=f"{view_id}_R",
+                image_path=str(output_right.relative_to(self.assets_rendered_dir.parent)),
+                camera_params=camera_params['right_camera'],
+                lighting=lighting_config.to_dict(),
+            )
+
+            rendered_pairs.append({
+                'left': str(output_left),
+                'right': str(output_right),
+                'camera_params': camera_params
+            })
+
+            logger.info(f"Rendered stereo view {view_id} for {object_id}")
+
+        return rendered_pairs
+
     def render_stereo_pair(
         self,
         output_left: str,
@@ -549,6 +671,11 @@ def main():
         action="store_true",
         help="Run test render",
     )
+    parser.add_argument(
+        "--stereo",
+        action="store_true",
+        help="Render stereo pairs (default: mono views)",
+    )
 
     # When launched via `blender --background --python script.py -- <args>`,
     # sys.argv contains Blender's own arguments too. Strip everything up to
@@ -608,16 +735,25 @@ def main():
     elif args.mode == "assets":
         if args.object_id:
             # Render specific object
-            renderer.render_object_views(args.object_id)
+            if args.stereo:
+                renderer.render_object_stereo_views(args.object_id)
+            else:
+                renderer.render_object_views(args.object_id)
         else:
             # Render all objects
             db = Database(config.get("database.path", "/data/database/assets.db"))
             objects = db.get_all_objects()
-            logger.info(f"Rendering {len(objects)} objects")
 
-            for obj in objects:
-                logger.info(f"Rendering object: {obj['id']} ({obj['name']})")
-                renderer.render_object_views(obj['id'])
+            if args.stereo:
+                logger.info(f"Rendering {len(objects)} objects with stereo pairs")
+                for obj in objects:
+                    logger.info(f"Rendering stereo views: {obj['id']} ({obj['name']})")
+                    renderer.render_object_stereo_views(obj['id'])
+            else:
+                logger.info(f"Rendering {len(objects)} objects")
+                for obj in objects:
+                    logger.info(f"Rendering object: {obj['id']} ({obj['name']})")
+                    renderer.render_object_views(obj['id'])
 
 
 if __name__ == "__main__":

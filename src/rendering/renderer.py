@@ -156,10 +156,15 @@ class BlenderRenderer:
                 return None
 
             # Get imported objects (glTF often imports multiple: meshes, empties, cameras)
-            imported_objects = bpy.context.selected_objects
+            imported_objects = list(bpy.context.selected_objects)
 
-            # Filter for mesh objects only
-            mesh_objects = [o for o in imported_objects if o.type == 'MESH' and o.data is not None]
+            # Remove non-mesh objects first (cameras, lights, empties)
+            mesh_objects = []
+            for o in imported_objects:
+                if o.type == 'MESH' and o.data is not None:
+                    mesh_objects.append(o)
+                else:
+                    bpy.data.objects.remove(o, do_unlink=True)
 
             if not mesh_objects:
                 logger.warning(f"No mesh objects found in {file_path}")
@@ -176,11 +181,6 @@ class BlenderRenderer:
                 obj = bpy.context.active_object
             else:
                 obj = mesh_objects[0]
-
-            # Deselect non-mesh objects (cameras, lights, empties)
-            for o in imported_objects:
-                if o.type != 'MESH':
-                    bpy.data.objects.remove(o, do_unlink=True)
 
             return obj
 

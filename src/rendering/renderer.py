@@ -462,17 +462,24 @@ class BlenderRenderer:
         # Center and scale object
         self.center_and_scale_object(obj)
 
+        # Place object slightly above ground so it sits on top
+        obj.location.z = 1.0  # half of target_size (2m)
+
+        # Add a textured ground plane for stereo matching context
+        # (SGBM needs features to match - black background fails)
+        self._create_textured_ground(size=20.0)
+
         # Get camera angles from config (simplified for stereo - use 6 key angles)
         camera_angles = self.config.get("rendering.camera.angles", [])
         if not camera_angles:
-            # Default 6 angles around the object
+            # Default 6 angles around the object - elevated to see ground
             camera_angles = [
-                [0, 0, 0],      # Front
-                [0, 90, 0],     # Right
-                [0, 180, 0],    # Back
-                [0, 270, 0],    # Left
-                [30, 45, 0],    # Top-front-right
-                [-30, 225, 0],  # Bottom-back-left
+                [20, 0, 0],     # Front
+                [20, 60, 0],    # Front-right
+                [20, 120, 0],   # Back-right
+                [20, 180, 0],   # Back
+                [20, 240, 0],   # Back-left
+                [20, 300, 0],   # Front-left
             ]
 
         num_views = num_views or self.config.get("rendering.stereo_views_per_object", 6)
@@ -495,19 +502,20 @@ class BlenderRenderer:
         for i, angle in enumerate(camera_angles):
             view_id = f"{i+1:03d}"
 
-            # Set up stereo camera
+            # Set up stereo camera (look at object center, raised 1m above ground)
             distance = self.config.get("rendering.camera.distances", [4])[0]
+            look_at_point = (0, 0, 1.0)  # object center is at z=1
             center_cam = CameraConfig.from_spherical(
                 distance=distance,
                 azimuth=angle[1],
                 elevation=angle[0],
-                look_at=(0, 0, 0),
+                look_at=look_at_point,
             )
 
             stereo_camera = StereoCamera(
                 baseline=baseline,
                 center_position=center_cam.position,
-                look_at=(0, 0, 0),
+                look_at=look_at_point,
                 focal_length=center_cam.focal_length
             )
 
@@ -612,6 +620,52 @@ class BlenderRenderer:
 
         # Return camera parameters for stereo processing
         return camera_config.to_dict(resolution=self.resolution)
+
+    def _create_textured_ground(self, size: float = 20.0):
+        """
+        Create a ground plane with procedural noise texture.
+
+        Critical for stereo matching: SGBM needs visual features to match
+        between left/right images. Plain colored backgrounds match as zero
+        disparity (infinite depth), producing garbage results.
+
+        Args:
+            size: Size of the ground plane (meters)
+        """
+        # Create plane at z=0
+        bpy.ops.mesh.primitive_plane_add(size=size, location=(0, 0, 0))
+        ground = bpy.context.active_object
+        ground.name = "TexturedGround"
+
+        # Create textured material using procedural noise
+        mat = bpy.data.materials.new(name="GroundNoiseMaterial")
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+
+        bsdf = nodes.get("Principled BSDF")
+        bsdf.inputs["Roughness"].default_value = 0.8
+        bsdf.inputs["Metallic"].default_value = 0.0
+
+        # Add procedural noise texture for stereo matching features
+        coord = nodes.new("ShaderNodeTexCoord")
+        noise = nodes.new("ShaderNodeTexNoise")
+        noise.inputs["Scale"].default_value = 25.0
+        noise.inputs["Detail"].default_value = 8.0
+        noise.inputs["Roughness"].default_value = 0.6
+
+        # ColorRamp for high-contrast pattern (better SGBM matching)
+        ramp = nodes.new("ShaderNodeValToRGB")
+        ramp.color_ramp.elements[0].color = (0.3, 0.3, 0.35, 1.0)  # dark grey
+        ramp.color_ramp.elements[1].color = (0.7, 0.65, 0.6, 1.0)  # tan
+
+        links.new(coord.outputs["Generated"], noise.inputs["Vector"])
+        links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+        links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+
+        ground.data.materials.append(mat)
+        logger.info(f"Textured ground plane created (size={size}m)")
+        return ground
 
     def create_ground_plane(
         self,

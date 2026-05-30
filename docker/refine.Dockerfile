@@ -48,6 +48,12 @@ RUN pip install --no-cache-dir "setuptools==69.5.1" wheel && \
     git clone --depth 1 https://github.com/NVlabs/nvdiffrast.git /opt/nvdiffrast && \
     pip install --no-cache-dir --no-build-isolation /opt/nvdiffrast
 
+# TensorBoard event-file writer for torch.utils.tensorboard.SummaryWriter (the
+# `monitor` service renders these). Kept AFTER the nvdiffrast layer so editing
+# it never invalidates the cached CUDA-extension build. 2.14.x matches the
+# numpy 1.24 / protobuf pins above.
+RUN pip install --no-cache-dir tensorboard==2.14.0 six
+
 ENV PYTHONPATH=/app
 
 CMD ["python3", "-c", "import torch, nvdiffrast.torch as dr; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"]

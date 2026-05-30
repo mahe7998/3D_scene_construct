@@ -236,7 +236,10 @@ services:
   # MONITORING SERVICE (Tensorboard)
   # ===========================================================================
   monitor:
-    image: tensorflow/tensorflow:latest
+    # Reuse the refine image: it pins tensorboard==2.14.0 (the tensorflow:latest
+    # image dropped the tensorboard CLI from $PATH). Same TB version that writes
+    # the events. Requires `docker-compose build refine` first.
+    image: 3d-scene-construct/refine:latest
     container_name: monitor
     volumes:
       - ./data/logs:/logs

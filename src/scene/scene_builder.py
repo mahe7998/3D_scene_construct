@@ -58,8 +58,9 @@ def build_demo_scene(
         else [rng.choice(assets) for _ in range(num_objects)]
 
     # Separation: ring radius scales with object size and count so footprints
-    # never overlap (each needs ~target_size of room).
-    radius = 0.0 if num_objects == 1 else max(1.5, target_size * num_objects * 0.6)
+    # never overlap (each needs ~target_size of room). Kept tight so objects
+    # cluster near frame center rather than at the periphery.
+    radius = 0.0 if num_objects == 1 else max(1.0, target_size * num_objects * 0.45)
     positions = _ring_positions(num_objects, radius, phase=rng.uniform(0, 2 * math.pi))
 
     objects = []
@@ -73,14 +74,16 @@ def build_demo_scene(
             "target_size": target_size,
         })
 
-    # Camera: far enough to frame the whole ring, tilted down to see the ground.
-    distance = max(4.0, radius + 3.5 * target_size)
+    # Camera: close enough to fill the frame, with a fairly low elevation so
+    # objects are seen side-on (clearer silhouettes for recognition + better
+    # stereo parallax than a top-down view). Aimed at the cluster's mid-height.
+    distance = max(3.0, radius + 2.3 * target_size)
     camera = {
         "distance": round(distance, 3),
         "azimuth": round(rng.uniform(0, 360), 2),
-        "elevation": round(rng.uniform(22, 38), 2),
+        "elevation": round(rng.uniform(15, 28), 2),
         "baseline": 0.065,
-        "look_at": [0.0, 0.0, target_size / 2.0],
+        "look_at": [0.0, 0.0, target_size * 0.5],
     }
 
     return {

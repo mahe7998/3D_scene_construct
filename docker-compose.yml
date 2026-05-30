@@ -208,6 +208,31 @@ services:
     restart: "no"
 
   # ===========================================================================
+  # POSE REFINEMENT SERVICE (nvdiffrast render-and-compare)
+  # ===========================================================================
+  refine:
+    build:
+      context: .
+      dockerfile: docker/refine.Dockerfile
+    image: 3d-scene-construct/refine:latest
+    container_name: refine
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${DOCKER_GPU_COUNT:-1}
+              capabilities: [gpu]
+    shm_size: ${DOCKER_SHM_SIZE:-8g}
+    restart: "no"
+
+  # ===========================================================================
   # MONITORING SERVICE (Tensorboard)
   # ===========================================================================
   monitor:

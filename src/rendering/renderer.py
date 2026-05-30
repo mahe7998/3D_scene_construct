@@ -752,6 +752,189 @@ class BlenderRenderer:
         return obj
 
 
+    def normalize_and_rest_object(
+        self,
+        obj: bpy.types.Object,
+        target_size: float = 1.0,
+    ) -> Dict:
+        """
+        Scale an object so its longest dimension == target_size (meters), center
+        it in X/Y at the origin, and rest its BOTTOM on z=0.
+
+        Differs from center_and_scale_object (which centers on all axes): here the
+        object sits ON the ground, so placing it at location (x, y, 0) rests it on
+        the ground plane. Bakes into vertices so location=(0,0,0), scale=(1,1,1).
+
+        Returns:
+            {"scale_factor", "dimensions": [dx,dy,dz]} (dimensions AFTER scaling).
+        """
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+        coords = [obj.matrix_world @ v.co for v in obj.data.vertices]
+        min_c = [min(c[i] for c in coords) for i in range(3)]
+        max_c = [max(c[i] for c in coords) for i in range(3)]
+        dims = [max_c[i] - min_c[i] for i in range(3)]
+        cx, cy = (min_c[0] + max_c[0]) / 2, (min_c[1] + max_c[1]) / 2
+
+        max_dim = max(dims)
+        if max_dim <= 0:
+            logger.warning(f"Object has zero dimensions: {dims}")
+            return {"scale_factor": 1.0, "dimensions": dims}
+        s = target_size / max_dim
+
+        # Center X/Y, drop bottom to z=0, scale uniformly - all baked to vertices.
+        for v in obj.data.vertices:
+            v.co.x = (v.co.x - cx) * s
+            v.co.y = (v.co.y - cy) * s
+            v.co.z = (v.co.z - min_c[2]) * s
+        obj.data.update()
+        obj.location = (0, 0, 0)
+        obj.scale = (1, 1, 1)
+
+        dims_after = [d * s for d in dims]
+        logger.info(f"Normalized object: dims_after={[round(d,3) for d in dims_after]}, scale={s:.4f}")
+        return {"scale_factor": s, "dimensions": dims_after}
+
+    def render_scene_stereo(self, scene: Dict, out_dir: str) -> Dict:
+        """
+        Render a multi-object scene as a stereo pair and return full ground truth.
+
+        Args:
+            scene: {
+                "scene_id": str,
+                "ground": {"size": float},                 # textured ground plane
+                "lighting": {"preset": str},
+                "camera": {"distance","azimuth","elevation","baseline","look_at"},
+                "objects": [{
+                    "object_id", "file_path", "category",
+                    "ground_xy": [x, y],                    # placement on ground
+                    "yaw_deg": float,                       # upright rotation about Z
+                    "target_size": float,                   # normalized longest dim (m)
+                }],
+            }
+            out_dir: directory to write view_L.jpg / view_R.jpg
+
+        Returns:
+            Ground-truth dict (objects with final poses + camera intrinsics/extrinsics
+            + image paths). Also the caller persists it as ground_truth.json.
+        """
+        import math
+        import mathutils
+        from src.stereo.stereo_camera import StereoCamera
+
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        ground_size = scene.get("ground", {}).get("size", 20.0)
+        cam = scene["camera"]
+        look_at = tuple(cam.get("look_at", (0.0, 0.0, 0.3)))
+
+        # Build the scene.
+        self.clear_scene()
+        self._create_textured_ground(size=ground_size)
+        self.setup_lighting(LightingConfig.get_preset(scene.get("lighting", {}).get("preset", "default")))
+
+        gt_objects = []
+        for spec in scene["objects"]:
+            asset_path = self._resolve_asset_path(spec["file_path"])
+            obj = self.load_object(str(asset_path))
+            if obj is None:
+                logger.warning(f"Skipping object {spec['object_id']} - failed to load")
+                continue
+
+            norm = self.normalize_and_rest_object(obj, target_size=spec.get("target_size", 1.0))
+
+            x, y = spec["ground_xy"]
+            yaw = math.radians(spec.get("yaw_deg", 0.0))
+            obj.location = (x, y, 0.0)
+            obj.rotation_mode = 'XYZ'
+            obj.rotation_euler = (0.0, 0.0, yaw)
+
+            # Orientation quaternion in (x, y, z, w) order.
+            q = mathutils.Euler((0.0, 0.0, yaw), 'XYZ').to_quaternion()
+            gt_objects.append({
+                "object_id": spec["object_id"],
+                "category": spec.get("category"),
+                "file_path": spec["file_path"],
+                # Ground-contact point = "where it was placed".
+                "position": [float(x), float(y), 0.0],
+                "centroid_height": float(norm["dimensions"][2] / 2.0),
+                "orientation_quat_xyzw": [float(q.x), float(q.y), float(q.z), float(q.w)],
+                "yaw_deg": float(spec.get("yaw_deg", 0.0)),
+                "scale_factor": float(norm["scale_factor"]),
+                "target_size": float(spec.get("target_size", 1.0)),
+                "dimensions": [float(d) for d in norm["dimensions"]],
+            })
+
+        # Camera + render.
+        stereo_cam = StereoCamera.from_spherical(
+            distance=cam.get("distance", 8.0),
+            azimuth=cam.get("azimuth", 0.0),
+            elevation=cam.get("elevation", 30.0),
+            baseline=cam.get("baseline", 0.065),
+            look_at=look_at,
+        )
+        left_path = out_dir / "view_L.jpg"
+        right_path = out_dir / "view_R.jpg"
+        self.render_stereo_pair(str(left_path), str(right_path), camera_config=stereo_cam)
+
+        return {
+            "scene_id": scene.get("scene_id"),
+            "ground": {"type": "textured", "z": 0.0, "size": ground_size},
+            "objects": gt_objects,
+            "camera": self._scene_camera_gt(stereo_cam),
+            "images": {
+                "left": str(left_path),
+                "right": str(right_path),
+            },
+        }
+
+    def _resolve_asset_path(self, file_path: str) -> Path:
+        """Resolve a DB file_path (relative to /data/assets) to an absolute path."""
+        p = Path(file_path)
+        if p.is_absolute():
+            return p
+        # DB stores paths relative to the assets dir (e.g. raw/<cat>/<id>/<id>.glb).
+        return self.assets_raw_dir.parent / file_path
+
+    def _scene_camera_gt(self, stereo_cam) -> Dict:
+        """
+        Full camera ground truth: shared intrinsics + per-eye extrinsics.
+
+        Extrinsics use the OpenCV convention (x=right, y=down, z=forward):
+        R_world_to_cam rows = [right, -up, forward]; t = -R @ eye_position.
+        The left eye is the reference frame for the SGBM depth map.
+        """
+        import numpy as np
+
+        resolution = self.resolution
+        K = stereo_cam.get_camera_intrinsics(resolution)
+        right, up, forward = stereo_cam._get_camera_axes()
+        R = np.stack([right, -up, forward], axis=0)  # world -> cam (3x3)
+
+        def eye(cfg):
+            pos = np.array(cfg["position"], dtype=float)
+            t = -R @ pos
+            return {
+                "position": pos.tolist(),
+                "R_world_to_cam": R.tolist(),
+                "t_world_to_cam": t.tolist(),
+            }
+
+        return {
+            "convention": "opencv (x=right, y=down, z=forward); left eye is depth reference",
+            "baseline": stereo_cam.baseline,
+            "resolution": resolution,
+            "intrinsics": K.tolist(),
+            "basis_world": {"right": right.tolist(), "up": up.tolist(), "forward": forward.tolist()},
+            "left": eye(stereo_cam.get_left_camera_config()),
+            "right": eye(stereo_cam.get_right_camera_config()),
+        }
+
+
 def direction_to_rotation(direction):
     """Convert direction vector to rotation quaternion."""
     import mathutils
@@ -783,6 +966,19 @@ def main():
         "--stereo",
         action="store_true",
         help="Render stereo pairs (default: mono views)",
+    )
+    # --mode scenes options
+    parser.add_argument(
+        "--scene-count", type=int, default=1,
+        help="[--mode scenes] number of scenes to generate+render",
+    )
+    parser.add_argument(
+        "--num-objects", type=int, default=2,
+        help="[--mode scenes] objects per scene",
+    )
+    parser.add_argument(
+        "--target-size", type=float, default=1.0,
+        help="[--mode scenes] normalized longest dimension of each object (m)",
     )
 
     # When launched via `blender --background --python script.py -- <args>`,
@@ -862,6 +1058,39 @@ def main():
                 for obj in objects:
                     logger.info(f"Rendering object: {obj['id']} ({obj['name']})")
                     renderer.render_object_views(obj['id'])
+
+    elif args.mode == "scenes":
+        import json
+        from src.scene.scene_builder import build_demo_scene
+
+        db = Database(config.get("database.path", "/data/database/assets.db"))
+        scenes_dir = Path(config.get("paths.scenes", "/data/scenes"))
+
+        for i in range(args.scene_count):
+            scene = build_demo_scene(
+                db, num_objects=args.num_objects, index=i, target_size=args.target_size
+            )
+            if scene is None:
+                logger.error("No assets in DB - cannot build scenes")
+                break
+
+            out_dir = scenes_dir / scene["scene_id"]
+            logger.info(f"Rendering scene {scene['scene_id']} ({len(scene['objects'])} objects)")
+            gt = renderer.render_scene_stereo(scene, str(out_dir))
+            gt["complexity_level"] = scene["complexity_level"]
+
+            gt_path = out_dir / "ground_truth.json"
+            with open(gt_path, "w") as f:
+                json.dump(gt, f, indent=2)
+
+            db.add_scene(
+                complexity_level=scene["complexity_level"],
+                objects=gt["objects"],
+                environment={"ground": gt["ground"], "camera": gt["camera"]},
+                image_path=gt["images"]["left"],
+                ground_truth=gt,
+            )
+            logger.info(f"Scene GT written: {gt_path}")
 
 
 if __name__ == "__main__":

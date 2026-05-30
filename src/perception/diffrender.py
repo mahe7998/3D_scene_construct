@@ -49,7 +49,12 @@ def eye_from_spherical(distance, azim_deg, elev_deg, look_at_pt):
 
 # ----------------------------------------------------------------------------- mesh
 def load_normalized_mesh(path, target_size=1.0):
-    """Load glb -> centered in xy, bottom on z=0, longest dim == target_size."""
+    """Load glb -> centered in xy, bottom on z=0, longest dim == target_size.
+
+    Returns (verts, faces, uv, tex): uv (V,2) and an RGB texture (Ht,Wt,3) in
+    [0,1] for the appearance/yaw cue. Falls back to a flat 2x2 base-color texture
+    (uv=0) when an asset has no baseColorTexture - those just render a solid color.
+    """
     m = trimesh.load(path, force="mesh")
     v = np.asarray(m.vertices, np.float32)
     f = np.asarray(m.faces, np.int64)
@@ -59,7 +64,33 @@ def load_normalized_mesh(path, target_size=1.0):
     v[:, 1] -= (lo[1] + hi[1]) / 2.0
     v[:, 2] -= lo[2]
     v *= s
-    return v, f
+
+    vis = m.visual
+    uv = None
+    try:
+        if getattr(vis, "uv", None) is not None and len(vis.uv) == len(v):
+            uv = np.asarray(vis.uv, np.float32)
+    except Exception:
+        uv = None
+    img = None
+    try:
+        img = vis.material.baseColorTexture
+    except Exception:
+        img = None
+    if uv is not None and img is not None:
+        tex = np.asarray(img.convert("RGB"), np.float32) / 255.0
+    else:
+        col = np.array([0.6, 0.6, 0.6], np.float32)
+        try:
+            bc = vis.material.baseColorFactor
+            if bc is not None:
+                bc = np.asarray(bc[:3], np.float32)
+                col = bc / 255.0 if bc.max() > 1.0 else bc
+        except Exception:
+            pass
+        tex = np.tile(col.reshape(1, 1, 3), (2, 2, 1)).astype(np.float32)
+        uv = np.zeros((len(v), 2), np.float32)
+    return v, f, uv, tex
 
 
 def vertex_normals(verts, faces_l):
@@ -87,8 +118,9 @@ class DiffRenderer:
         self.PV = P @ self.V
         self.glctx = dr.RasterizeCudaContext()
 
-    def render(self, verts0, faces_i, faces_l, tx, ty, yaw):
-        """verts0: canonical (V,3). tx,ty,yaw: scalar tensors. -> depth,mask,normals (1,H,W,C)."""
+    def render(self, verts0, faces_i, faces_l, tx, ty, yaw, uv=None, tex=None):
+        """verts0: canonical (V,3). tx,ty,yaw: scalar tensors.
+        Returns depth, mask, normals, rgb (each (1,H,W,C)); rgb is zeros if no uv/tex."""
         c, s = torch.cos(yaw), torch.sin(yaw)
         z0, o1 = torch.zeros_like(c), torch.ones_like(c)
         Rz = torch.stack([
@@ -106,4 +138,9 @@ class DiffRenderer:
         nrm = vertex_normals(vw, faces_l)
         normals, _ = dr.interpolate(nrm[None], rast, faces_i)
         normals = normals / (normals.norm(dim=-1, keepdim=True) + 1e-8)
-        return depth, mask, normals
+        if uv is not None and tex is not None:
+            uv_pix, _ = dr.interpolate(uv[None], rast, faces_i)
+            rgb = dr.texture(tex[None], uv_pix, filter_mode="linear") * mask
+        else:
+            rgb = torch.zeros_like(normals)
+        return depth, mask, normals, rgb

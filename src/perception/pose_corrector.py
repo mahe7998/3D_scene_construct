@@ -39,11 +39,13 @@ class MeshBank:
             if limit and len(self.meshes) >= limit:
                 break
             try:
-                v, f = load_normalized_mesh(f"{assets_root}/{r['file_path']}", target_size)
+                v, f, uv, tex = load_normalized_mesh(f"{assets_root}/{r['file_path']}", target_size)
                 self.meshes.append((
                     torch.tensor(v, device=device),
                     torch.tensor(f, dtype=torch.int32, device=device),
                     torch.tensor(f, dtype=torch.int64, device=device),
+                    torch.tensor(uv, device=device),
+                    torch.tensor(tex, device=device).contiguous(),
                 ))
             except Exception as e:
                 print(f"  skip {r['id'][:8]}: {e}")
@@ -56,15 +58,16 @@ class MeshBank:
 
 
 def _buffers(renderer, mesh, x, y, yaw, device):
-    """Render and stack [depth, mask, normals] -> (H,W,5)."""
-    v0, fi, fl = mesh
-    d, m, n = renderer.render(
+    """Render and stack [depth, mask, normals, rgb] -> (H,W,8)."""
+    v0, fi, fl, uv, tex = mesh
+    d, m, n, rgb = renderer.render(
         v0, fi, fl,
         torch.tensor(float(x), device=device),
         torch.tensor(float(y), device=device),
         torch.tensor(float(yaw), device=device),
+        uv, tex,
     )
-    return torch.cat([d[0], m[0], n[0]], dim=-1)  # (H,W,5)
+    return torch.cat([d[0], m[0], n[0], rgb[0]], dim=-1)  # (H,W,8)
 
 
 def sample_batch(renderer, bank, B, device, rng):
@@ -88,7 +91,7 @@ def sample_batch(renderer, bank, B, device, rng):
 
 
 class PoseCorrector(nn.Module):
-    def __init__(self, in_ch=10):
+    def __init__(self, in_ch=16):  # depth+mask+normals+rgb (8) x {observed, current}
         super().__init__()
         def blk(i, o):
             return nn.Sequential(nn.Conv2d(i, o, 4, 2, 1), nn.BatchNorm2d(o), nn.ReLU(inplace=True))

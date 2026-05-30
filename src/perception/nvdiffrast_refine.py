@@ -146,33 +146,92 @@ def main():
                                torch.tensor(yaw_true, device=dev))
     d_t, m_t, n_t = d_t.detach(), m_t.detach(), n_t.detach()
 
-    # Perturbed initial estimate.
-    tx = torch.tensor(args.dx, device=dev, requires_grad=True)
-    ty = torch.tensor(args.dy, device=dev, requires_grad=True)
-    yaw = torch.tensor(yaw_true + math.radians(args.dyaw), device=dev, requires_grad=True)
+    # Separable Gaussian blur on NHWC buffers - scale-space continuation widens
+    # the convergence basin (a blurred silhouette/depth has gradient support far
+    # from the true pose, instead of a razor-thin edge).
+    def gaussian_blur(x, sigma):
+        if sigma <= 0:
+            return x
+        rad = max(1, int(3 * sigma))
+        xs = torch.arange(-rad, rad + 1, device=x.device, dtype=torch.float32)
+        k = torch.exp(-(xs ** 2) / (2 * sigma * sigma)); k = k / k.sum()
+        xc = x.permute(0, 3, 1, 2)
+        C = xc.shape[1]
+        kh = k.view(1, 1, -1, 1).repeat(C, 1, 1, 1)
+        kw = k.view(1, 1, 1, -1).repeat(C, 1, 1, 1)
+        xc = torch.nn.functional.conv2d(xc, kh, padding=(rad, 0), groups=C)
+        xc = torch.nn.functional.conv2d(xc, kw, padding=(0, rad), groups=C)
+        return xc.permute(0, 2, 3, 1)
 
-    opt = torch.optim.Adam([tx, ty, yaw], lr=args.lr)
-    print(f"\ninit error:  dx={args.dx:+.3f} dy={args.dy:+.3f} dyaw={args.dyaw:+.1f} deg")
-    for it in range(args.iters):
-        opt.zero_grad()
+    def geom_loss(tx, ty, yaw, sigma, dw, wn):
+        """Geometric loss at blur scale `sigma` with depth/normal weights dw/wn."""
         d, m, n = render(tx, ty, yaw)
-        inter = (m_t * m)                                   # where both have geometry
-        depth_loss = (torch.abs(d - d_t) * inter).sum() / (inter.sum() + 1e-6)
-        sil_loss = torch.mean((m - m_t) ** 2)               # silhouette alignment
-        nrm_loss = ((1.0 - (n * n_t).sum(-1, keepdim=True)) * inter).sum() / (inter.sum() + 1e-6)
-        loss = depth_loss + sil_loss + nrm_loss
-        loss.backward()
-        opt.step()
-        if it % 50 == 0 or it == args.iters - 1:
-            print(f"  it {it:4d}  loss={loss.item():.5f}  "
-                  f"depth={depth_loss.item():.5f} sil={sil_loss.item():.5f} nrm={nrm_loss.item():.5f}  "
-                  f"| x={tx.item():+.3f} y={ty.item():+.3f} yaw={math.degrees(yaw.item()):.2f}")
+        mb, mtb = gaussian_blur(m, sigma), gaussian_blur(m_t, sigma)
+        sil = torch.mean((mb - mtb) ** 2)
+        inter = mtb * mb
+        depth = torch.zeros((), device=dev)
+        nrm = torch.zeros((), device=dev)
+        if dw > 0:
+            db, dtb = gaussian_blur(d, sigma), gaussian_blur(d_t, sigma)
+            depth = (torch.abs(db - dtb) * inter).sum() / (inter.sum() + 1e-6)
+        if wn > 0:
+            nb, ntb = gaussian_blur(n, sigma), gaussian_blur(n_t, sigma)
+            nrm = ((1.0 - (nb * ntb).sum(-1, keepdim=True)) * inter).sum() / (inter.sum() + 1e-6)
+        return SIL_W * sil + dw * depth + wn * nrm
 
-    rec_yaw = math.degrees(yaw.item()) % 360.0
+    # Coarse-to-fine schedule: (blur sigma px, depth weight, normal weight, lr).
+    # The COARSE phase is silhouette-ONLY (depth/normals off): silhouette MSE over
+    # the whole image rises when the object moves away, so it can't "escape" the
+    # way intersection-normalized depth let it earlier. Depth then normals come in
+    # as it locks on; lr decays so it settles instead of dithering.
+    phases = [
+        (6.0, 0.0, 0.0, args.lr),
+        (3.0, 1.0, 0.0, args.lr * 0.5),
+        (1.5, 1.0, 0.5, args.lr * 0.25),
+        (0.0, 1.0, 1.0, args.lr * 0.1),
+    ]
+    SIL_W = 20.0  # keep silhouette dominant throughout so the object can't run off
+    iters_per = max(1, args.iters // len(phases))
+
+    def refine(tx0, ty0, yaw0):
+        """Coarse-to-fine refine from one init; return (x, y, yaw, final_score)."""
+        tx = torch.tensor(tx0, device=dev, requires_grad=True)
+        ty = torch.tensor(ty0, device=dev, requires_grad=True)
+        yaw = torch.tensor(yaw0, device=dev, requires_grad=True)
+        opt = torch.optim.Adam([tx, ty, yaw], lr=args.lr)
+        for sigma, dw, wn, lr in phases:
+            for g in opt.param_groups:
+                g["lr"] = lr
+            for _ in range(iters_per):
+                opt.zero_grad()
+                loss = geom_loss(tx, ty, yaw, sigma, dw, wn)
+                loss.backward()
+                opt.step()
+        # Score each start at full resolution with all terms, so they're comparable.
+        with torch.no_grad():
+            score = geom_loss(tx, ty, yaw, 0.0, 1.0, 1.0).item()
+        return tx.item(), ty.item(), yaw.item(), score
+
+    # Multi-start over yaw (the ambiguous DOF): refine from headings around the
+    # full circle (same translation estimate) and keep the lowest-loss result -
+    # the standard fix for rotation's narrow basin / local minima.
+    starts = [math.radians(a) for a in range(0, 360, 45)]
+    print(f"\ninit translation estimate ({args.dx:+.3f}, {args.dy:+.3f}); "
+          f"{len(starts)} yaw starts every 45 deg")
+    best = None
+    for yc in starts:
+        rx, ry, ryaw, score = refine(args.dx, args.dy, yc)
+        print(f"  start yaw={math.degrees(yc):6.1f}  ->  x={rx:+.3f} y={ry:+.3f} "
+              f"yaw={math.degrees(ryaw) % 360:6.2f}  score={score:.5f}")
+        if best is None or score < best[3]:
+            best = (rx, ry, ryaw, score)
+
+    rx, ry, ryaw, score = best
+    rec_yaw = math.degrees(ryaw) % 360.0
     tgt_yaw = math.degrees(yaw_true) % 360.0
-    print(f"\nRESULT")
-    print(f"  position: recovered ({tx.item():+.3f}, {ty.item():+.3f})  target (0.000, 0.000)  "
-          f"err={math.hypot(tx.item(), ty.item()):.4f} m")
+    print(f"\nRESULT (best of {len(starts)} starts, score={score:.5f})")
+    print(f"  position: recovered ({rx:+.3f}, {ry:+.3f})  target (0.000, 0.000)  "
+          f"err={math.hypot(rx, ry):.4f} m")
     print(f"  yaw:      recovered {rec_yaw:.2f} deg  target {tgt_yaw:.2f} deg  "
           f"err={abs((rec_yaw - tgt_yaw + 180) % 360 - 180):.2f} deg")
 
@@ -188,7 +247,9 @@ def main():
         return (a * 255).astype(np.uint8)
 
     with torch.no_grad():
-        d_r, _, _ = render(tx, ty, yaw)
+        d_r, _, _ = render(torch.tensor(rx, device=dev),
+                           torch.tensor(ry, device=dev),
+                           torch.tensor(ryaw, device=dev))
     imageio.imwrite(out / "depth_target.png", depth_png(d_t))
     imageio.imwrite(out / "depth_recovered.png", depth_png(d_r))
     print(f"\nSaved depth_target.png / depth_recovered.png to {out}")
